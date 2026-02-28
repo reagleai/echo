@@ -35,10 +35,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, []);
 
   const isAnonymous = user?.is_anonymous === true || !user?.email;
-  const displayName = isAnonymous ? "Guest" : (user?.profile?.full_name || user?.email);
+  const displayName = isAnonymous ? "Guest" : (user?.user_metadata?.full_name || user?.email);
   const initials = isAnonymous
     ? "G"
-    : user?.profile?.full_name
+    : user?.user_metadata?.full_name
       ?.split(" ")
       .map((n: string) => n[0])
       .join("")

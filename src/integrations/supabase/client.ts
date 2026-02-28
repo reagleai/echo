@@ -1,11 +1,160 @@
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from './types';
+// Mock Supabase Client for UI-only clone
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const mockUser = {
+  id: "mock-user-123",
+  email: "mock@example.com",
+};
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Supabase URL and Anon Key must be provided in environment variables.');
-}
+const mockSession = {
+  access_token: "mock-token",
+  expires_in: 3600,
+  refresh_token: "mock-refresh",
+  token_type: "bearer",
+  user: mockUser,
+};
 
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
+// Mock Auth leveraging localStorage
+const SESSION_KEY = "mock_supabase_session";
+
+const getLocalSession = () => {
+  try {
+    const val = localStorage.getItem(SESSION_KEY);
+    if (!val) return null;
+    const parsed = JSON.parse(val);
+
+    // Strict Schema Validation: Enforce exact expected shape and reject tampering
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !parsed.user ||
+      typeof parsed.user.id !== 'string' ||
+      typeof parsed.user.email !== 'string' ||
+      typeof parsed.user.is_anonymous !== 'boolean' ||
+      !parsed.user.user_metadata ||
+      typeof parsed.user.user_metadata.full_name !== 'string'
+    ) {
+      console.warn("Security Error: Session object malformed or tampered. Wiping session.");
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    localStorage.removeItem(SESSION_KEY);
+    return null;
+  }
+};
+
+const setLocalSession = (session: any) => {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  authListeners.forEach(cb => cb("SIGNED_IN", session));
+};
+
+const clearLocalSession = () => {
+  localStorage.removeItem(SESSION_KEY);
+  authListeners.forEach(cb => cb("SIGNED_OUT", null));
+};
+
+const authListeners: any[] = [];
+
+const auth = {
+  signInWithPassword: async ({ email, password }: any) => {
+    // Artificial network delay to look real
+    await new Promise(r => setTimeout(r, 600));
+
+    // Hardcoded credentials match
+    if (email === "sharma.ajay8561@gmail.com" && password === "ripple@2025") {
+      const user = { id: "mock-ripple-admin", email, is_anonymous: false, user_metadata: { full_name: "Admin" } };
+      const session = { access_token: "mock-token", expires_in: 3600, refresh_token: "mock-refresh", token_type: "bearer", user };
+      setLocalSession(session);
+      return { data: { session, user }, error: null };
+    }
+
+    // Guest Demo mode match
+    if (email === "guest@portfolio.demo" && password === "demo2026") {
+      const user = { id: "mock-guest", email, is_anonymous: true, user_metadata: { full_name: "Guest" } };
+      const session = { access_token: "mock-token", expires_in: 3600, refresh_token: "mock-refresh", token_type: "bearer", user };
+      setLocalSession(session);
+      return { data: { session, user }, error: null };
+    }
+
+    // Reject all others
+    return { data: { session: null, user: null }, error: new Error("Invalid email or password") };
+  },
+  signUp: async ({ email, password, options }: any) => {
+    const fullName = options?.data?.full_name || email.split('@')[0];
+    const user = { id: "mock-user-" + Date.now(), email, is_anonymous: false, user_metadata: { full_name: fullName } };
+    const session = { access_token: "mock-token", expires_in: 3600, refresh_token: "mock-refresh", token_type: "bearer", user };
+    setLocalSession(session);
+    return { data: { session, user }, error: null };
+  },
+  signOut: async () => {
+    clearLocalSession();
+    return { error: null };
+  },
+  getSession: async () => ({ data: { session: getLocalSession() }, error: null }),
+  onAuthStateChange: (callback: any) => {
+    authListeners.push(callback);
+    // Immediately fire with current session
+    setTimeout(() => {
+      const current = getLocalSession();
+      if (current) callback("SIGNED_IN", current);
+    }, 10);
+    return {
+      data: {
+        subscription: {
+          unsubscribe: () => {
+            const idx = authListeners.indexOf(callback);
+            if (idx > -1) authListeners.splice(idx, 1);
+          }
+        }
+      }
+    };
+  },
+  getUser: async () => {
+    const session = getLocalSession();
+    return { data: { user: session?.user || null }, error: null };
+  },
+};
+
+// Mock DB wrapper
+const makeQueryBuilder = (table: string) => {
+  return {
+    select: () => makeQueryBuilder(table),
+    insert: () => makeQueryBuilder(table),
+    update: () => makeQueryBuilder(table),
+    delete: () => makeQueryBuilder(table),
+    eq: () => makeQueryBuilder(table),
+    gte: () => makeQueryBuilder(table),
+    lte: () => makeQueryBuilder(table),
+    order: () => makeQueryBuilder(table),
+    limit: () => makeQueryBuilder(table),
+    range: () => makeQueryBuilder(table),
+    maybeSingle: async () => ({ data: null, error: null }),
+    single: async () => ({ data: null, error: null }),
+    then: (resolve: any) => resolve({ data: [], count: 0, error: null }),
+  };
+};
+
+const from = (table: string) => makeQueryBuilder(table);
+
+// Mock Functions
+const functions = {
+  invoke: async () => ({ data: { id: "mock-exec-id" }, error: null }),
+};
+
+// Realtime Channel Mocks
+const channelMock = {
+  on: () => channelMock,
+  subscribe: () => channelMock,
+};
+const channel = () => channelMock;
+const removeChannel = () => { };
+
+export const supabase = {
+  auth,
+  from,
+  functions,
+  channel,
+  removeChannel,
+} as any;

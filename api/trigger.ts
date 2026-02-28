@@ -36,13 +36,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Input Validation
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-    const { query, user_email, execution_id, callback_url } = body || {};
+    const { keywords, limit, min_connections, session_id, callback_url } = body || {};
 
-    if (!query || typeof query !== 'string' || query.length > 500) {
-        return res.status(400).json({ error: 'Invalid or missing query' });
+    if (!keywords || typeof keywords !== 'string' || keywords.length > 500) {
+        return res.status(400).json({ error: 'Invalid or missing keywords' });
     }
-    if (!execution_id || typeof execution_id !== 'string') {
-        return res.status(400).json({ error: 'Invalid or missing execution_id' });
+    if (typeof limit !== 'number' || limit < 1 || limit > 50) {
+        return res.status(400).json({ error: 'Invalid limit' });
     }
 
     const webhookUrl = process.env.N8N_WEBHOOK_URL;
@@ -54,7 +54,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const response = await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, user_email, execution_id, callback_url }),
+            body: JSON.stringify({ keywords, limit, min_connections, session_id, callback_url }),
         });
         const data = await response.text();
 

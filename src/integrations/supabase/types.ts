@@ -128,8 +128,6 @@ export type Database = {
           schedule_enabled: boolean
           schedule_time: string
           timezone: string
-          product_keywords: string[]
-          marketing_keywords: string[]
           updated_at: string
           user_id: string
         }
@@ -141,8 +139,6 @@ export type Database = {
           schedule_enabled?: boolean
           schedule_time?: string
           timezone?: string
-          product_keywords?: string[]
-          marketing_keywords?: string[]
           updated_at?: string
           user_id: string
         }
@@ -154,8 +150,6 @@ export type Database = {
           schedule_enabled?: boolean
           schedule_time?: string
           timezone?: string
-          product_keywords?: string[]
-          marketing_keywords?: string[]
           updated_at?: string
           user_id?: string
         }
@@ -166,10 +160,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      delete_user: {
-        Args: Record<PropertyKey, never>
-        Returns: undefined
-      }
+      [_ in never]: never
     }
     Enums: {
       [_ in never]: never

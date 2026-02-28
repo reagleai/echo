@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "@/hooks/use-toast";
 import { motion } from "framer-motion";
 import { ArrowRight, Eye } from "lucide-react";
-import { isNetworkError, checkBackendReachable } from "@/lib/network-utils";
+import { isNetworkError } from "@/lib/network-utils";
 
 async function signInWithRetry(
   email: string,
@@ -19,28 +20,22 @@ async function signInWithRetry(
   try {
     const result = await attempt();
     if (!result.error) return result;
-    // If it's an auth error (not network), return immediately
     if (!isNetworkError(result.error)) return result;
   } catch (err) {
     if (!isNetworkError(err)) throw err;
   }
 
-  // One retry for network errors
   console.log("Login: network error detected, retrying once...");
   try {
     return await attempt();
   } catch (retryErr) {
-    // Check reachability to give user actionable feedback
-    const reachable = await checkBackendReachable();
-    if (!reachable) {
-      return { error: { message: "Cannot reach the server. Please check your internet connection or try refreshing the page." } };
-    }
-    return { error: { message: "Login request failed. Please try again." } };
+    return { error: { message: "Login request failed. Please check your internet connection and try again." } };
   }
 }
 
 export default function Login() {
   const navigate = useNavigate();
+  const { signInAsGuest } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -49,15 +44,9 @@ export default function Login() {
   const handleGuestLogin = async () => {
     setGuestLoading(true);
     try {
-      const { error } = await signInWithRetry("guest@portfolio.demo", "demo2026");
-      if (error) {
-        toast({ title: "Guest login failed", description: error.message, variant: "destructive" });
-      } else {
-        navigate("/");
-      }
+      signInAsGuest();
     } catch {
       toast({ title: "Guest login failed", description: "An unexpected error occurred.", variant: "destructive" });
-    } finally {
       setGuestLoading(false);
     }
   };

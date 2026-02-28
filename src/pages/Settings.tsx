@@ -20,7 +20,6 @@ import {
   User, Settings as SettingsIcon, Clock, Bell, Trash2, Plus, X, RotateCcw,
   Activity, CheckCircle2, XCircle, Loader2,
 } from "lucide-react";
-import { DOMAIN_KEYWORDS } from "@/config/keywords";
 import { cn } from "@/lib/utils";
 
 const fadeIn = { initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.4 } };
@@ -42,6 +41,11 @@ export default function Settings() {
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [emailNotifications, setEmailNotifications] = useState(true);
+
+  const [productKeywords, setProductKeywords] = useState<string[]>([]);
+  const [marketingKeywords, setMarketingKeywords] = useState<string[]>([]);
+  const [newKeywordInput, setNewKeywordInput] = useState({ product: "", marketing: "" });
+
   const [resetting, setResetting] = useState(false);
 
   const [healthChecks, setHealthChecks] = useState<HealthResult[]>([
@@ -59,8 +63,16 @@ export default function Settings() {
   }, [user]);
 
   const loadAll = async () => {
+    if (user!.is_anonymous) {
+      setFullName("Guest");
+      setProductKeywords(["B2B", "SaaS"]);
+      setMarketingKeywords(["Growth", "SEO"]);
+      setLoading(false);
+      return;
+    }
+
     const [profileRes, settingsRes] = await Promise.all([
-      supabase.from("profiles").select("*").eq("user_id", user!.id).maybeSingle(),
+      supabase.from("profiles").select("*").eq("id", user!.id).maybeSingle(),
       supabase.from("user_settings").select("*").eq("user_id", user!.id).maybeSingle(),
     ]);
 
@@ -68,38 +80,66 @@ export default function Settings() {
       setFullName(profileRes.data.full_name || "");
     }
     if (settingsRes.data) {
-      setDefaultDomain(settingsRes.data.domain);
-      setScheduleEnabled(settingsRes.data.schedule_enabled);
-      setScheduleTime(settingsRes.data.schedule_time?.substring(0, 5) || "09:00");
-      setTimezone(settingsRes.data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
-      setEmailNotifications(settingsRes.data.email_notifications);
+      setDefaultDomain("product"); // Settings structure from prior build, default applies
+      setProductKeywords(settingsRes.data.product_keywords || []);
+      setMarketingKeywords(settingsRes.data.marketing_keywords || []);
     }
     setLoading(false);
   };
 
   const saveProfile = async () => {
+    if (user!.is_anonymous) return toast({ title: "Guest Mode", description: "Profiles cannot be saved in guest mode.", variant: "destructive" });
     setSaving(true);
-    const { error } = await supabase.from("profiles").update({ full_name: fullName }).eq("user_id", user!.id);
+    const { error } = await supabase.from("profiles").update({ full_name: fullName }).eq("id", user!.id);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else toast({ title: "Profile updated" });
+    else toast({ title: "Profile updated", description: "Your changes have been saved to the database." });
     setSaving(false);
   };
 
   const saveSettings = async () => {
+    if (user!.is_anonymous) return toast({ title: "Guest Mode", description: "Settings cannot be saved in guest mode.", variant: "destructive" });
     setSaving(true);
     const { error } = await supabase.from("user_settings").update({
-      default_domain: defaultDomain,
-      schedule_enabled: scheduleEnabled,
-      schedule_time: scheduleTime + ":00",
-      timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-      email_notifications: emailNotifications,
+      product_keywords: productKeywords,
+      marketing_keywords: marketingKeywords
     }).eq("user_id", user!.id);
+
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else toast({ title: "Settings saved" });
+    else toast({ title: "Settings saved", description: "Your workflow preferences have been updated." });
     setSaving(false);
   };
 
+  const addKeyword = (domain: "product" | "marketing") => {
+    const list = domain === "product" ? productKeywords : marketingKeywords;
+    const setter = domain === "product" ? setProductKeywords : setMarketingKeywords;
+    const input = newKeywordInput[domain].trim();
+
+    if (!input) return;
+    if (list.length >= 5) {
+      toast({ title: "Limit reached", description: "You can only have up to 5 keywords per domain.", variant: "destructive" });
+      return;
+    }
+    if (list.map(k => k.toLowerCase()).includes(input.toLowerCase())) {
+      toast({ title: "Duplicate", description: "This keyword already exists.", variant: "destructive" });
+      return;
+    }
+    setter([...list, input]);
+    setNewKeywordInput({ ...newKeywordInput, [domain]: "" });
+  };
+
+  const removeKeyword = (domain: "product" | "marketing", keyword: string) => {
+    const list = domain === "product" ? productKeywords : marketingKeywords;
+    const setter = domain === "product" ? setProductKeywords : setMarketingKeywords;
+    if (list.length <= 1) {
+      toast({ title: "Cannot remove", description: "You must have at least one keyword for each domain.", variant: "destructive" });
+      return;
+    }
+    setter(list.filter(k => k !== keyword));
+  };
+
+
   const resetHistory = async () => {
+    if (user!.is_anonymous) return toast({ title: "Guest Mode", description: "History cleared locally." });
     setResetting(true);
     const { error } = await supabase.from("execution_logs").delete().eq("user_id", user!.id);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -108,6 +148,26 @@ export default function Settings() {
   };
 
   const deleteAccount = async () => {
+    if (user!.is_anonymous) {
+      await signOut();
+      return;
+    }
+    toast({ title: "Deleting account...", description: "Removing all your data permanently." });
+
+    // 1. Delete execution logs
+    await supabase.from("execution_logs").delete().eq("user_id", user!.id);
+    // 2. Delete user settings
+    await supabase.from("user_settings").delete().eq("user_id", user!.id);
+    // 3. Delete profile
+    await supabase.from("profiles").delete().eq("id", user!.id);
+    // 4. Trigger RPC to delete auth.users record securely
+    const { error } = await supabase.rpc('delete_user');
+
+    if (error) {
+      toast({ title: "Error deleting account", description: error.message, variant: "destructive" });
+      return;
+    }
+
     toast({ title: "Account deleted", description: "Your data has been permanently removed." });
     await signOut();
   };
@@ -123,16 +183,14 @@ export default function Settings() {
     ];
     setHealthChecks([...results]);
 
-    // 1. Database
     try {
-      const { error } = await supabase.from("user_settings").select("id").limit(1).maybeSingle();
+      const { error } = await supabase.from("user_settings").select("user_id").limit(1).maybeSingle();
       results[0] = { label: "Database Connection", status: error ? "fail" : "pass", detail: error?.message };
     } catch (e: any) {
       results[0] = { label: "Database Connection", status: "fail", detail: e.message };
     }
     setHealthChecks([...results]);
 
-    // 2-4. Edge Functions (expect auth errors, not network errors)
     const fns = [
       { name: "trigger-workflow", idx: 1 },
       { name: "workflow-callback", idx: 2 },
@@ -141,7 +199,6 @@ export default function Settings() {
     await Promise.all(fns.map(async (fn) => {
       try {
         const { error } = await supabase.functions.invoke(fn.name, { body: {} });
-        // Any response (even 401/403) means the function is reachable
         results[fn.idx] = {
           label: fn.name,
           status: "pass",
@@ -153,7 +210,6 @@ export default function Settings() {
       setHealthChecks([...results]);
     }));
 
-    // 5. Latest execution
     try {
       const { data, error } = await supabase
         .from("execution_logs")
@@ -194,7 +250,7 @@ export default function Settings() {
       <motion.div {...fadeIn} className="space-y-8 max-w-3xl">
         <div>
           <h1 className="font-display text-3xl font-bold">Settings</h1>
-          <p className="text-muted-foreground mt-1">Manage your profile, workflow preferences, and integrations.</p>
+          <p className="text-muted-foreground mt-1">Manage your profile, workflow preferences, and keywords.</p>
         </div>
 
         <Card>
@@ -219,121 +275,66 @@ export default function Settings() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
-              <SettingsIcon className="h-5 w-5" /> Workflow Preferences
+              <SettingsIcon className="h-5 w-5" /> Domain Keywords
             </CardTitle>
+            <CardDescription>Configure the keywords triggered for each domain (Max 5 per domain).</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Default Domain</Label>
-              <Select value={defaultDomain} onValueChange={setDefaultDomain}>
-                <SelectTrigger className="w-48">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="product">Product</SelectItem>
-                  <SelectItem value="marketing">Marketing</SelectItem>
-                </SelectContent>
-              </Select>
+          <CardContent className="space-y-6">
+            <div className="space-y-3">
+              <Label className="uppercase text-xs text-muted-foreground tracking-wider">Product Keywords</Label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {productKeywords.map((keyword) => (
+                  <Badge key={keyword} variant="secondary" className="gap-1 py-1 px-3 text-sm">
+                    {keyword}
+                    <X
+                      className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
+                      onClick={() => removeKeyword("product", keyword)}
+                    />
+                  </Badge>
+                ))}
+              </div>
+              <div className="flex gap-2 max-w-sm">
+                <Input
+                  value={newKeywordInput.product}
+                  onChange={(e) => setNewKeywordInput({ ...newKeywordInput, product: e.target.value })}
+                  placeholder="e.g., Startup"
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addKeyword("product"); } }}
+                />
+                <Button variant="secondary" onClick={() => addKeyword("product")} disabled={productKeywords.length >= 5}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
+
             <Separator />
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <Label>Daily Schedule</Label>
-                <p className="text-sm text-muted-foreground">Automatically run workflow daily</p>
-              </div>
-              <Switch checked={scheduleEnabled} onCheckedChange={setScheduleEnabled} />
-            </div>
-            {scheduleEnabled && (
-              <div className="space-y-2">
-                <Label className="flex items-center gap-2"><Clock className="h-4 w-4" /> Run Time</Label>
-                <div className="flex items-center gap-3">
-                  <Input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-40" />
-                  <span className="text-xs text-muted-foreground">{timezone?.replace(/_/g, " ")}</span>
-                </div>
-              </div>
-            )}
-            <Button onClick={saveSettings} disabled={saving}>Save Preferences</Button>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Domain Keywords</CardTitle>
-            <CardDescription>Default static keywords applied to workflow triggers</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {(["product", "marketing"] as ("product" | "marketing")[]).map((dom) => {
-              const domKeywords = DOMAIN_KEYWORDS[dom];
-              return (
-                <div key={dom} className="space-y-2">
-                  <Label className="capitalize text-sm">{dom}</Label>
-                  <div className="flex flex-wrap gap-2">
-                    {domKeywords.map((keyword) => (
-                      <Badge key={keyword} variant="secondary" className="gap-1 py-1 px-3">
-                        {keyword}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Bell className="h-5 w-5" /> Notifications
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <Label>Email Notifications</Label>
-                <p className="text-sm text-muted-foreground">Receive email when workflows complete or fail</p>
+            <div className="space-y-3">
+              <Label className="uppercase text-xs text-muted-foreground tracking-wider">Marketing Keywords</Label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {marketingKeywords.map((keyword) => (
+                  <Badge key={keyword} variant="secondary" className="gap-1 py-1 px-3 text-sm">
+                    {keyword}
+                    <X
+                      className="ml-1 h-3 w-3 cursor-pointer hover:text-destructive"
+                      onClick={() => removeKeyword("marketing", keyword)}
+                    />
+                  </Badge>
+                ))}
               </div>
-              <Switch checked={emailNotifications} onCheckedChange={setEmailNotifications} />
+              <div className="flex gap-2 max-w-sm">
+                <Input
+                  value={newKeywordInput.marketing}
+                  onChange={(e) => setNewKeywordInput({ ...newKeywordInput, marketing: e.target.value })}
+                  placeholder="e.g., SEO"
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addKeyword("marketing"); } }}
+                />
+                <Button variant="secondary" onClick={() => addKeyword("marketing")} disabled={marketingKeywords.length >= 5}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
-            <Button onClick={saveSettings} disabled={saving} className="mt-4">Save</Button>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Activity className="h-5 w-5" /> System Health
-            </CardTitle>
-            <CardDescription>Verify backend connectivity and function status</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Button onClick={runHealthCheck} disabled={healthRunning} variant="outline" className="gap-2">
-              {healthRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-              {healthRunning ? "Checking..." : "Run Health Check"}
-            </Button>
-            <div className="space-y-2">
-              {healthChecks.map((check) => (
-                <div key={check.label} className="flex items-center gap-3 py-2 px-3 rounded-lg bg-muted/30">
-                  {check.status === "pass" ? (
-                    <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
-                  ) : check.status === "fail" ? (
-                    <XCircle className="h-4 w-4 text-destructive shrink-0" />
-                  ) : check.status === "loading" ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
-                  ) : (
-                    <div className="h-4 w-4 rounded-full border-2 border-border shrink-0" />
-                  )}
-                  <div className="min-w-0">
-                    <p className={cn(
-                      "text-sm font-medium",
-                      check.status === "fail" && "text-destructive"
-                    )}>{check.label}</p>
-                    {check.detail && (
-                      <p className="text-xs text-muted-foreground truncate">{check.detail}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <Button onClick={saveSettings} disabled={saving} className="mt-2">Save Keywords</Button>
           </CardContent>
         </Card>
 

@@ -14,6 +14,7 @@ import { motion } from "framer-motion";
 import {
   History as HistoryIcon, Filter, Download, ExternalLink, ChevronDown
 } from "lucide-react";
+import { sanitizeUrl } from "@/lib/utils";
 
 const fadeIn = { initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.4 } };
 const PAGE_SIZE = 20;
@@ -256,7 +257,7 @@ export default function History() {
                             <TableCell>
                               {log.spreadsheet_url && (
                                 <Button variant="ghost" size="icon" asChild>
-                                  <a href={log.spreadsheet_url} target="_blank" rel="noopener noreferrer">
+                                  <a href={sanitizeUrl(log.spreadsheet_url)} target="_blank" rel="noopener noreferrer">
                                     <ExternalLink className="h-4 w-4" />
                                   </a>
                                 </Button>
@@ -289,7 +290,7 @@ export default function History() {
                                   )}
                                   {log.spreadsheet_url && (
                                     <div className="sm:col-span-2">
-                                      <a href={log.spreadsheet_url} target="_blank" rel="noopener noreferrer"
+                                      <a href={sanitizeUrl(log.spreadsheet_url)} target="_blank" rel="noopener noreferrer"
                                         className="font-medium text-primary hover:underline">
                                         Open Spreadsheet →
                                       </a>

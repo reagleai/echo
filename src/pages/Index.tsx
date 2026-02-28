@@ -19,7 +19,7 @@ import {
   TrendingUp, Zap, BarChart3, TestTube
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-import { DOMAIN_KEYWORDS } from "@/config/keywords";
+import { sanitizeUrl } from "@/lib/utils";
 
 const fadeIn = {
   initial: { opacity: 0, y: 12 },
@@ -49,94 +49,98 @@ export default function Index() {
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
 
+  // Realtime keyword display state
+  const [currentDomainKeywords, setCurrentDomainKeywords] = useState<string[]>([]);
+
   const [runState, setRunState] = useState<RunState>("idle");
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const activeLogIdRef = useRef<string | null>(null);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startTimeRef = useRef<number | null>(null);
 
-  const clearPolling = useCallback(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-  }, []);
-
-  // Removed realtime Supabase channel listener as we now rely strictly on N8N Serverless Callback polling
-
-  // Main Polling Loop
+  // Stale Run Sweeper
   useEffect(() => {
-    if (runState !== "processing") {
-      clearPolling();
-      return;
-    }
+    const sweepStaleRuns = async () => {
+      if (!user) return;
 
-    const TIMEOUT_MS = 15 * 60 * 1000;
+      const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from("execution_logs")
+        .update({ status: "failed", error_message: "Workflow timed out after 15 minutes" })
+        .eq("user_id", user.id)
+        .eq("status", "processing")
+        .lt("started_at", fifteenMinsAgo)
+        .select("id");
 
-    pollingRef.current = setInterval(async () => {
-      const logId = activeLogIdRef.current;
-      if (!logId) return;
-
-      if (startTimeRef.current && Date.now() - startTimeRef.current > TIMEOUT_MS) {
-        await supabase
-          .from("execution_logs")
-          .update({ status: "failed", error_message: "Workflow timed out after 15 minutes" })
-          .eq("id", logId);
-        clearPolling();
-        setRunState("failed");
-        setWorkflowError("Workflow timed out after 15 minutes");
-        toast({ title: "Workflow timed out", description: "No response after 15 minutes. Marked as failed.", variant: "destructive" });
-        fetchData();
-        return;
-      }
-
-      try {
-        const res = await fetch(`/api/poll?execution_id=${logId}`);
-        if (!res.ok) return; // Keep polling if network blips
-        const data = await res.json();
-
-        if (data.ready) {
-          clearPolling();
-
-          await supabase.from("execution_logs").update({
-            status: data.status === "success" ? "completed" : "failed",
-            total_links: data.total_links || 0,
-            relevant_links: data.relevant_links || 0,
-            spreadsheet_url: data.spreadsheet_url || null,
-            completed_at: new Date().toISOString(),
-          }).eq("id", logId);
-
-          if (data.status === "success") {
-            setRunState("completing");
-            toast({ title: "Workflow complete!", description: `Found ${data.total_links} posts, ${data.relevant_links} relevant.` });
-            setTimeout(() => {
-              setRunState("done");
-              setTimeout(() => {
-                setRunState("idle");
-              }, 3000);
-            }, 1000); // 1 second completing animation transition
-          } else {
-            setRunState("failed");
-            setWorkflowError(data.error || "Unknown error occurred inside N8N workflow.");
-            toast({ title: "Workflow failed", description: data.error || "Something went wrong.", variant: "destructive" });
-          }
-          fetchData();
+      if (!error && data && data.length > 0 && activeLogIdRef.current) {
+        if (data.some(d => d.id === activeLogIdRef.current)) {
+          setRunState("failed");
+          setWorkflowError("Workflow timed out after 15 minutes");
         }
-      } catch (e) {
-        console.error("Poll Error:", e);
-        // We do not fail immediately on network err, allow next poll retry
       }
+    };
+    sweepStaleRuns();
+  }, [user]);
 
-    }, 5000);
+  // Real-time Subscriptions
+  useEffect(() => {
+    if (!user) return;
 
-    return clearPolling;
-  }, [runState]);
+    const channel = supabase.channel('execution_logs_updates')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'execution_logs', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          const updatedLog = payload.new as ExecutionLog;
+          setLogs(prev => prev.map(log => log.id === updatedLog.id ? updatedLog : log));
+
+          if (updatedLog.id === activeLogIdRef.current) {
+            if (updatedLog.status === "completed" || updatedLog.status === "success") {
+              setRunState("completing");
+              toast({ title: "Workflow complete!", description: `Found ${updatedLog.total_links} posts, ${updatedLog.relevant_links} relevant.` });
+              setTimeout(() => {
+                setRunState("done");
+                setTimeout(() => setRunState("idle"), 3000);
+              }, 1000);
+            } else if (updatedLog.status === "failed") {
+              setRunState("failed");
+              setWorkflowError(updatedLog.error_message || "Unknown error occurred inside workflow.");
+              toast({ title: "Workflow failed", description: updatedLog.error_message || "Something went wrong.", variant: "destructive" });
+            }
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'execution_logs', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          const newLog = payload.new as ExecutionLog;
+          setLogs(prev => [newLog, ...prev]);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'execution_logs', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          const deletedLogId = payload.old.id;
+          setLogs(prev => prev.filter(log => log.id !== deletedLogId));
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [user]);
+
+
+  useEffect(() => {
+    if (!user) return;
+    fetchData();
+  }, [user, domain]); // Re-fetch when domain changes to update keyword preview
 
   const fetchData = async () => {
     const [logsRes, settingsRes] = await Promise.all([
-      supabase.from("execution_logs").select("*").order("started_at", { ascending: false }).limit(10),
-      supabase.from("user_settings").select("*").maybeSingle(),
+      supabase.from("execution_logs").select("*").eq("user_id", user!.id).order("started_at", { ascending: false }).limit(10),
+      supabase.from("user_settings").select("*").eq("user_id", user!.id).maybeSingle(),
     ]);
+
     if (logsRes.data) {
       setLogs(logsRes.data as ExecutionLog[]);
 
@@ -147,51 +151,69 @@ export default function Index() {
         );
         if (runningLog) {
           activeLogIdRef.current = runningLog.id;
-          startTimeRef.current = new Date(runningLog.started_at).getTime();
           setRunState("processing");
           setWorkflowError(null);
         }
       }
     }
+
     if (settingsRes.data) {
       setScheduleEnabled(settingsRes.data.schedule_enabled);
       setScheduleTime(settingsRes.data.schedule_time?.substring(0, 5) || "09:00");
-      setDomain(settingsRes.data.domain);
       setTimezone(settingsRes.data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+      const keywordsArray = domain === "product"
+        ? settingsRes.data.product_keywords
+        : settingsRes.data.marketing_keywords;
+      setCurrentDomainKeywords(keywordsArray || []);
     } else {
       setScheduleEnabled(false);
       setScheduleTime("09:00");
-      setDomain("product");
+      setCurrentDomainKeywords(["Guest fallback keywords"]);
     }
     setLoading(false);
   };
 
   const triggerWorkflow = async () => {
+    if (user?.is_anonymous) {
+      toast({ title: "Guest Mode", description: "You cannot trigger real workflows in Guest Mode.", variant: "destructive" });
+      return;
+    }
+
+    if (currentDomainKeywords.length === 0) {
+      toast({ title: "No keywords", description: "Please add keywords in Settings first.", variant: "destructive" });
+      return;
+    }
+
     setRunState("initiating");
     setWorkflowError(null);
-    startTimeRef.current = Date.now();
 
     const executionId = crypto.randomUUID();
     activeLogIdRef.current = executionId;
 
     const startIso = new Date().toISOString();
-    await supabase.from("execution_logs").insert({
+
+    // DB insertion immediately generates the realtime INSERT event
+    const { error: insertError } = await supabase.from("execution_logs").insert({
       id: executionId,
-      user_id: user.id,
+      user_id: user!.id,
       domain: domain,
       status: "processing",
       started_at: startIso
     });
 
-    fetchData();
+    if (insertError) {
+      toast({ title: "Failed to initialize logging", description: insertError.message, variant: "destructive" });
+      setRunState("failed");
+      return;
+    }
 
     try {
-      const keywordsArray = DOMAIN_KEYWORDS[domain as keyof typeof DOMAIN_KEYWORDS] || [];
-      const queryStr = keywordsArray.join(", ");
+      const queryStr = currentDomainKeywords.join(", ");
 
       const payload = {
         query: queryStr,
-        user_email: user.email,
+        user_email: user!.email,
         execution_id: executionId,
         callback_url: `${window.location.origin}/api/callback`
       };
@@ -210,14 +232,12 @@ export default function Index() {
       toast({ title: "Workflow triggered!", description: `Running for ${domain} domain. This may take a few minutes.` });
 
     } catch (err: any) {
-      toast({ title: "Trigger failed", description: "check your connection.", variant: "destructive" });
+      toast({ title: "Trigger failed", description: "Check your connection.", variant: "destructive" });
       await supabase.from("execution_logs").update({
         status: "failed",
         error_message: err.message || "Failed to call /api/trigger"
       }).eq("id", executionId);
-      setRunState("failed");
-      setWorkflowError(err.message || "Failed to call /api/trigger");
-      fetchData();
+      // Let real-time listener catch the failed state instead of setting it manually to avoid race conditions
     }
   };
 
@@ -229,18 +249,13 @@ export default function Index() {
         error_message: "Run cancelled by user"
       }).eq("id", logId);
     }
-    setRunState("failed");
-    setWorkflowError("Cancelled by user");
-    clearPolling();
-    fetchData();
+    // Realtime subscription will pick up the failure and set states!
   };
 
   const resetWorkflow = () => {
     setRunState("idle");
     setWorkflowError(null);
     activeLogIdRef.current = null;
-    startTimeRef.current = null;
-    clearPolling();
   };
 
   const retryWorkflow = () => {
@@ -249,7 +264,7 @@ export default function Index() {
   };
 
   const saveSchedule = async (enabled: boolean, time?: string) => {
-    if (!user) return;
+    if (!user || user.is_anonymous) return;
     const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const { error } = await supabase.from("user_settings").update({
       schedule_enabled: enabled,
@@ -264,6 +279,7 @@ export default function Index() {
   };
 
   const handleScheduleToggle = (checked: boolean) => {
+    if (user?.is_anonymous) return toast({ title: "Guest Mode", description: "Schedule requires sign in." });
     setScheduleEnabled(checked);
     saveSchedule(checked);
   };
@@ -339,7 +355,7 @@ export default function Index() {
                   <div className="mt-4 p-4 border rounded-md bg-muted/20">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Search Pattern</p>
                     <div className="flex flex-wrap gap-2">
-                      {DOMAIN_KEYWORDS[domain as keyof typeof DOMAIN_KEYWORDS]?.map((kw: string) => (
+                      {currentDomainKeywords.map((kw: string) => (
                         <Badge key={kw} variant="secondary" className="font-normal">{kw}</Badge>
                       ))}
                     </div>
@@ -441,7 +457,7 @@ export default function Index() {
             </CardHeader>
             <CardContent>
               <Button variant="outline" className="gap-2" asChild>
-                <a href={lastRun.spreadsheet_url} target="_blank" rel="noopener noreferrer">
+                <a href={sanitizeUrl(lastRun.spreadsheet_url)} target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="h-4 w-4" />
                   Open in Google Sheets
                 </a>
@@ -517,7 +533,7 @@ export default function Index() {
                           variant={log.status === "success" || log.status === "completed" ? "default" : log.status === "failed" ? "destructive" : "secondary"}
                           className="capitalize"
                         >
-                          {log.status}
+                          {log.status === "success" ? "completed" : log.status}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
@@ -526,7 +542,7 @@ export default function Index() {
                       <TableCell>
                         {log.spreadsheet_url && (
                           <Button variant="ghost" size="icon" asChild>
-                            <a href={log.spreadsheet_url} target="_blank" rel="noopener noreferrer">
+                            <a href={sanitizeUrl(log.spreadsheet_url)} target="_blank" rel="noopener noreferrer">
                               <ExternalLink className="h-4 w-4" />
                             </a>
                           </Button>

@@ -20,7 +20,6 @@ const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "History", href: "/history", icon: History },
   { label: "Settings", href: "/settings", icon: Settings },
-  { label: "How It Works", href: "/how-it-works", icon: LayoutDashboard },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

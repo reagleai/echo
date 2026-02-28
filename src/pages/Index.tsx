@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
+import LandingHero from "@/components/LandingHero";
 import SearchQueryPreview from "@/components/SearchQueryPreview";
 import WorkflowProgressBar, { RunState } from "@/components/WorkflowProgressBar";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -132,6 +133,18 @@ export default function Index() {
     return clearPolling;
   }, [runState]);
 
+  useEffect(() => {
+    if (user) {
+      fetchData();
+    }
+  }, [user]);
+
+  if (!user) {
+    return <LandingHero onLoginSuccess={() => { }} />;
+  }
+
+  const isGuest = user?.is_anonymous === true || !user?.email;
+
   const fetchData = async () => {
     const [logsRes, settingsRes] = await Promise.all([
       supabase.from("execution_logs").select("*").order("started_at", { ascending: false }).limit(10),
@@ -167,6 +180,10 @@ export default function Index() {
   };
 
   const triggerWorkflow = async () => {
+    if (isGuest) {
+      toast({ title: "Guest Mode Restricted", description: "You cannot trigger the real workflow in guest mode.", variant: "destructive" });
+      return;
+    }
     setRunState("initiating");
     setWorkflowError(null);
     startTimeRef.current = Date.now();
@@ -250,6 +267,10 @@ export default function Index() {
 
   const saveSchedule = async (enabled: boolean, time?: string) => {
     if (!user) return;
+    if (isGuest) {
+      toast({ title: "Guest Mode Restricted", description: "Schedules cannot be modified in guest mode.", variant: "destructive" });
+      return;
+    }
     const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const { error } = await supabase.from("user_settings").update({
       schedule_enabled: enabled,
